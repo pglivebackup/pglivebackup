@@ -1,0 +1,1782 @@
+#!/bin/python
+import sys
+import os
+import getpass
+import shlex
+import psycopg2
+import pwd
+import grp
+from random import randint
+import random
+import subprocess
+import datetime
+from dateutil import parser
+import pycurl
+import re
+import string
+
+sys_pg_dump = ""
+sys_psql = ""
+sys_scp = ""
+sys_dest = ""
+sys_maxsize = 0
+sys_ignore_envs = "no"
+sys_no_repo = "no"
+sys_port = 0
+is_connected = "no"
+sys_auto = "no"
+sys_product_name = "PGLiveBackup"
+sys_product_release = "2017.04.01"
+sys_log_file = ""
+sys_log_state = "stop"
+sys_pg_restore = ""
+sys_upgrade_check = ""
+sys_found_command = "no"
+sys_restart_command = ""
+sys_automate_mode = "no"
+
+class color:
+   PURPLE = '\033[95m'
+   CYAN = '\033[96m'
+   DARKCYAN = '\033[36m'
+   BLUE = '\033[94m'
+   GREEN = '\033[92m'
+   YELLOW = '\033[93m'
+   RED = '\033[91m'
+   BOLD = '\033[1m'
+   UNDERLINE = '\033[4m'
+   END = '\033[0m'
+
+def sys_check_and_recreate_log_file():
+	global sys_log_file
+	proc = subprocess.Popen(["pwd", ""], stdout=subprocess.PIPE, shell=True)
+	(tmp_log_name, err) = proc.communicate()
+	tmp_log_name = tmp_log_name.strip()
+	tmp_log_name = tmp_log_name + "/pgl.log"
+	if (os.path.isfile(tmp_log_name) == False):
+		os.system('touch ' + tmp_log_name)
+	sys_log_file = tmp_log_name
+	return
+
+def sys_append_log_line(ln):
+	global sys_log_file
+	global sys_log_state
+	if (sys_log_state == "stop"):
+		return
+	tmp_log_file = ""
+	proc = subprocess.Popen(["pwd", ""], stdout=subprocess.PIPE, shell=True)
+	(tmp_log_file, err) = proc.communicate()
+	tmp_log_file = tmp_log_file.replace('\n','')
+	tmp_log_file = tmp_log_file + "/pgl.log"
+	now = datetime.datetime.now()
+	ln = now.strftime("%Y-%m-%d %H:%M") + ": " + ln
+	with open(tmp_log_file, "a") as myfile:
+		myfile.write(ln + '\n')
+	
+def get_current_rlt():
+	r = ""
+	dt = datetime.datetime.now()
+	r = r + str(dt.year)
+	if (len(str(dt.month)) == 1):
+		r = r + "0" + str(dt.month)
+	else:
+		r = r + str(dt.month)
+	if (len(str(dt.day)) == 1):
+		r = r + "0" + str(dt.day)
+	else:
+		r = r + str(dt.day)
+	if (len(str(dt.hour)) == 1):
+		r = r + "0" + str(dt.hour)
+	else:
+		r = r + str(dt.hour)
+	if (len(str(dt.minute)) == 1):
+		r = r + "0" + str(dt.minute)
+	else:
+		r = r + str(dt.minute)
+	return r
+
+def show_system_status():
+	global sys_pg_dump
+	global sys_psql
+	global sys_scp
+	global sys_dest
+	global sys_maxsize
+	global sys_no_repo
+	global sys_port
+	global sys_auto
+	global sys_product_name
+	global sys_product_release
+	global sys_log_name
+	current_rlt = get_current_rlt()
+	print ""
+	print "	" + color.BOLD + "System Status Report" + color.END
+	print "	" + color.BOLD + "-----------------------------------------------------------------------------" + color.END
+	print "	PGLiveBackup Version: 		" + color.BOLD + sys_product_release + color.END + " (stable)."
+	print "	Using PSQL Client Utility: 	" + color.BOLD + sys_psql + color.END
+	print "	Using PG_DUMP Utility: 		" + color.BOLD + sys_pg_dump + color.END
+	print "	Using SCP Utility:		" + color.BOLD + sys_scp + color.END
+	print "	Using PG_RESTORE Utility:	" + color.BOLD + sys_pg_restore + color.END
+	print "	Using Auto Response Mode:	" + color.BOLD + sys_auto.upper() + color.END + " (Can be changed with SET command)"
+	print "	Error/Info Log File:		" + color.BOLD + sys_log_file + color.END
+	# print "	Current RLT:			" + color.BOLD + current_rlt + color.END
+	print ""
+	print "	" + color.BOLD + "Local Connection & Repository Status" + color.END
+	print "	" + color.BOLD + "-----------------------------------------------------------------------------" + color.END
+	print "	Local PostgreSQL Port:		" + color.BOLD + str(sys_port) + color.END
+	print "	Using NOREPO mode:		" + color.BOLD + sys_no_repo.upper() + color.END + " (Can be changed with SET command)"
+	if (sys_maxsize == 0):
+		print "	Max Backup Size:		" + color.BOLD + "Not Set" + color.END + " (Can be changed with SET command)"
+	else:
+		print "	Max Backup Size:		" + color.BOLD + str(sys_maxsize) + " MB" + color.END + " (Can be changed with SET command)"
+	tmp_counter = 0
+	try:
+		conn_tmp = psycopg2.connect(database="postgres")
+		cur_tmp = conn_tmp.cursor()
+		cur_tmp.execute("select count(*) from information_schema.schemata where schema_name = 'pgl';")
+		row = cur_tmp.fetchone()
+		tmp_counter = int(row[0])
+		conn_tmp.close()
+		if (tmp_counter == 0):
+			print "	Local PGL Repository:		" + color.BOLD + color.RED + "No PGL Repository" + color.END + " (use INIT to create - see documentation)"
+		if (tmp_counter == 1):
+			print "	Local PGL Repository:		" + color.BOLD + color.GREEN + "Found Repository" + color.END
+	except:
+		print "	Local PGL Repository:		" + color.BOLD + color.RED + "Failed Connecting..." + color.END
+	print ""
+	print "	" + color.BOLD + "Product Version & Upgrade" + color.END
+	print "	" + color.BOLD + "-----------------------------------------------------------------------------" + color.END
+	print "	" + sys_product_name + " Command Line Utility"
+	print "	" + "Version: " + color.BOLD + sys_product_release + color.END
+	print "	" + "Website: " + color.BOLD + "http://www.pglivebackup.org" + color.END
+	print ""
+		
+def initdb():
+	global sys_no_repo
+	global is_connected
+	if (sys_no_repo == "yes"):
+		print ""
+		print "  PGL-023: Could not initialize repository while the '--no-repo' argument was passed."
+		print ""
+		return
+	print ""
+	tmp = raw_input(color.BOLD + "   ATTENTION: This will drop and recreate the repository and delete the existing data (if exists). Continue? [y/n]: " + color.END)
+	if (tmp.lower() == "y"):
+		conn = psycopg2.connect(database="postgres")
+		cur = conn.cursor()
+		cur.execute("drop schema if exists pgl cascade; create schema pgl; create sequence pgl.sqrow start 1001 increment by 1; create table pgl.backuplog (rowid int not null default nextval('pgl.sqrow'), db_name varchar(100) not null, task_type varchar(20) not null, tables_inventory varchar(2000) null, start_date timestamp not null, file_name varchar(255) not null, file_size_kb bigint not null, is_compressed bit not null, is_from_job bit not null); create table pgl.configslog (rowid int not null default nextval('pgl.sqrow'),configs_date timestamp not null, file_name varchar(255) not null, file_size_kb numeric(10,2)); create table pgl.jobs (rowid int not null default nextval('pgl.sqrow'), job_name varchar(100) not null, db_name varchar(100) not null, task_type varchar(20) not null, tables_inventory varchar(2000) null, last_runtime timestamp null, next_runtime timestamp null, is_enabled bit not null, is_running_now bit not null, use_compression bit not null, interval_minutes int not null, retention_minutes int not null); create table pgl.services (service_code varchar(20) not null, service_enabled bit not null, service_desc varchar(55)); insert into pgl.services values ('PGL-BACKUPJOB',0::bit,'Automates Timed Backup Jobs'),('PGL-RETENTIONJOB',0::bit,'Automates File Retention Deletion'); ")
+		conn.commit()
+		print "  " + color.BOLD + "INFO:" + color.END + " The repository was rebuilt."
+		is_connected = "yes"
+	print ""
+
+def sys_check_env_restart_command():
+	global sys_restart_command
+	tmp = os.getenv('PGL_RESTART_COMMAND',0)
+	if (tmp == 0):
+		print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_RESTORE_COMMAND' is not a valid or empty. Variable discarded."
+		return
+	sys_restart_command = tmp
+	
+def sys_check_env_port():
+	global sys_port
+	tmp = os.getenv('PGL_PORT',0)
+	if (tmp == 0):
+		print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_PORT' is not a valid or empty. Variable discarded."
+		return
+	else:
+		if (tmp == ""):
+			print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_PORT' is not a valid or empty. Variable discarded."
+			return
+		if (unicode(tmp).isnumeric() == False):
+			print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_PORT' is not a valid or empty. Variable discarded."
+			return
+		if (int(tmp) < 0):
+			print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_PORT' is not a valid or empty. Variable discarded."
+			return	
+		sys_port = int(tmp)
+
+def sys_check_env_maxsize():
+	global sys_maxsize
+	tmp = os.getenv('PGL_MAXSIZE',0)
+	if (tmp == 0):
+		print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_MAXSIZE' is not a valid or empty. Variable discarded."
+		return
+	if (tmp != 0):
+		if (tmp == ""):
+			print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_MAXSIZE' is not a valid or empty. Variable discarded."
+			return
+		if (unicode(tmp).isnumeric() == False):
+			print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_MAXSIZE' is not a valid or empty. Variable discarded."
+			return
+		if (int(tmp) < 0):
+			print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_MAXSIZE' is not a valid or empty. Variable discarded."
+			return		
+		sys_maxsize = int(tmp)
+
+def sys_check_env_destination():
+	global sys_dest
+	tmp = os.getenv('PGL_DESTINATION',0)
+	if (tmp != 0):
+		if (tmp == ""):
+			print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_DESTINATION' is not a valid folder. Variable discarded."
+			return
+		if (tmp != ""):
+			if (os.path.isdir(tmp) == False):
+				print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_DESTINATION' is not a valid folder. Variable discarded."
+				return
+			stat_info = os.stat(tmp)
+			uid = stat_info.st_uid
+			gid = stat_info.st_gid
+			t_user = pwd.getpwuid(uid)[0]
+			t_group = grp.getgrgid(gid)[0]
+			if ((t_user.lower() != "postgres") or (t_group.lower() != "postgres")):
+				print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_DESTINATION' refers to a folder that doesn't belong to [postgres:postgres]. Variable discarded."
+				return
+			sys_dest = tmp
+	else:
+		print "  " + color.PURPLE + "INFO" + color.END + ": The environment variable 'PGL_DESTINATION' is not a valid folder. Variable discarded."
+		return
+
+def showvariable(cmdstring):
+	global sys_dest
+	global sys_maxsize
+	global sys_port
+	global is_connected
+	global sys_no_repo
+	tmp = shlex.split(cmdstring)
+	if (len(tmp) == 1):
+		print "  PGL-017: Bad SHOW command - missing parameter."
+		print ""
+		return
+	if (tmp[1].lower() == "destination"):
+		if (sys_dest == ""):
+			print "  PGL-015: Variable was not set yet."
+			print ""
+			return
+		if (sys_dest != ""):
+			print ""
+			print "  " + color.BOLD + "DESTINATION:" + color.END + " " + sys_dest
+			print ""
+			return
+	if (tmp[1].lower() == "maxsize"):
+		if (sys_maxsize == 0):
+			print ""
+			print "  PGL-015: Variable was not set yet."
+			print ""
+			return
+		if (sys_maxsize != 0):
+			print ""
+			print "  " + color.BOLD + "MAXSIZE:" + color.END + " " + str(sys_maxsize) + " (MB)"
+			print ""
+			return
+	if (tmp[1].lower() == "port"):
+		if (sys_port == 0):
+			print ""
+			print "  PGL-015: Variable was not set yet."
+			print ""
+			return
+		if (sys_port != 0):
+			print "  " + color.BOLD + "PORT:" + color.END + " " + str(sys_port)
+			print ""
+			return
+	if (tmp[1].lower() == "fileinfo"):
+		if (len(tmp) <= 2):
+			print ""
+			print "  PGL-017: Bad SHOW command - missing parameter."
+			print ""
+			return
+		print ""
+		if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+			print ""
+			print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+			print ""
+			return
+		conn_tmp = psycopg2.connect(database="postgres")
+		cur_tmp = conn_tmp.cursor()
+		cur_tmp.execute("select count(*) from pgl.backuplog where file_name = '" + tmp[2] + "' or file_name like '%" + tmp[2] + "';")
+		row_tmp = cur_tmp.fetchone()
+		if (int(row_tmp[0]) == 0):
+			conn_tmp.close()
+			print ""
+			print "   PGL-088: Could not find any file/part according to the given file name."
+			print ""
+			return
+		print "   Parts (Files) Report:"
+		print "   --------------------------------------------------------------------------------------------------------------------------------"
+		print color.BOLD + "   Part#    Containment     Database Name        File Size    (KB) File Name Found" + color.END
+		print "   -------- --------------- -------------------- ----------------- ----------------------------------------------------------------"
+		cur_tmp = conn_tmp.cursor()
+		cur_tmp.execute("select rpad(rowid::varchar,8,' '),rpad(task_type,15,' '),rpad(db_name,20,' '),(rpad(file_size_kb::varchar,14,' ') || ' KB'),rpad(file_name,64,' ') from pgl.backuplog where file_name = '" + tmp[2] + "' or file_name like '%" + tmp[2] + "';")
+		rows_tmp = cur_tmp.fetchall()
+		for row in rows_tmp:
+			print "   " + row[0] + " " + row[1] + " " + row[2] + " " + row[3] + " " + row[4]
+		conn_tmp.close()
+		print ""
+
+def handle_set_command(cmdstring):
+	global sys_dest
+	global sys_maxsize
+	global sys_port
+	global sys_auto
+	global sys_no_repo
+	tmp_satus = ""
+	tmpset = shlex.split(cmdstring)
+	if (len(tmpset) == 1) or (len(tmpset) == 2) or (len(tmpset) == 3):
+		print "  PGL-009: Must provide arguments for SET command - see documentation for more information."
+		print ""
+		return
+	if not (tmpset[2] == '='):
+		print "  PGL-011: Missing equalization character."
+		print ""
+		return
+	if (tmpset[1].lower() == "destination"):
+		if not (cmdstring.endswith('"')):
+			print "  PGL-011: Value parameter is not wrapped with double quotations."
+			print ""
+			return
+		else:
+			if (os.path.isdir(tmpset[3]) == False):
+				print "  PGL-004: The given path doesn't exist on this server."
+				print ""
+				return
+			stat_info = os.stat(tmpset[3])
+			uid = stat_info.st_uid
+			gid = stat_info.st_gid
+			t_user = pwd.getpwuid(uid)[0]
+			t_group = grp.getgrgid(gid)[0]
+			if ((t_user.lower() != "postgres") or (t_group.lower() != "postgres")):
+				print "  PGL-007: The given directory doesn't belong to " + color.BOLD + "[postgres:postgres]" + color.END + " - see documentation for more information."
+				print ""
+				return
+			sys_dest = tmpset[3]
+	if (tmpset[1].lower() == "maxsize"):
+		if (tmpset[3] == ""):
+			print "  PGL-009: Must provide arguments for SET command - see documentation for more information."
+			print ""
+			return
+		if (unicode(tmpset[3]).isnumeric() == False):
+			print "  PGL-018: The value provided for the MAXSIZE is incorrect."
+			print ""
+			return
+		sys_maxsize = int(tmpset[3])
+		return
+	if (tmpset[1].lower() == "port"):
+		if (tmpset[3] == ""):
+			print "  PGL-009: Must provide arguments for SET command - see documentation for more information."
+			print ""
+			return
+		if (unicode(tmpset[3]).isnumeric() == False):
+			print "  PGL-053: The value provided for the PORT is incorrect."
+			print ""
+			return
+		if (int((tmpset[3])) <= 0):
+			print "  PGL-053: The value provided for the PORT is incorrect."
+			print ""
+			return
+		sys_port = int(tmpset[3])
+		return
+	if (tmpset[1].lower() == "auto"):
+		if ((tmpset[3] == "1") or (tmpset[3].lower() == "yes")):
+			sys_auto = "yes"
+			print ""
+			return
+		if ((tmpset[3] == "0") or (tmpset[3].lower() == "no")):
+			sys_auto = "no"
+			print ""
+			return
+
+def backup_database_proc(cmdstring):	
+	global sys_dest
+	global sys_no_repo
+	global sys_port
+	if (sys_port == 0):
+		print "  PGL-051: Could not start any backup without the PGL_PORT set first."
+		print ""
+		return
+	tmp_granularity = ""
+	tmp_inventory = ""
+	tmp_mode = ""
+	tmp_compression = ""
+	tmp_pos = 0
+	tmp_tables = ""
+	tmp_filename = ""
+	tmp_dbname = ""
+	tmp_sql = ""
+	if (sys_dest == ""):
+		print "  PGL-025: Could not start backup without the destination definition."
+		print ""
+		return
+	tmpset = shlex.split(cmdstring)
+	if (len(tmpset) <= 3):
+		print "  PGL-028: Must provide arguments for BACKUP DATABASE command - see documentation for more information."
+		print ""
+		return
+	if (str(tmpset[3]).lower() != "with"):
+		print "  PGL-029: Bad syntax for the BACKUP DATABASE command - see documentation for more information."
+		print ""
+		return
+	cur = conn.cursor()
+	cur.execute("select count(*) from pg_database where datname = '" + tmpset[2] + "';")
+	row = cur.fetchone()
+	if (int(row[0]) == 0):
+		print "  PGL-030: Database [" + tmpset[2] + "] does not exist in the local PostgreSQL server."
+		print ""
+		return
+	tmp_dbname = tmpset[2]
+	try:
+		tmp_pos = cmdstring.index("with")
+	except:
+		tmp_pos = 0
+	if (tmp_pos == 0):
+		try:
+			tmp_pos = cmdstring.index("WITH")
+		except:
+			tmp_pos = 0
+	tmp_pos = tmp_pos + 5
+	tmp_str = cmdstring[tmp_pos:]
+	tmp_str =  tmp_str.strip()
+	if (len(tmp_str) == 0):
+		print "  PGL-029: Bad syntax for the BACKUP DATABASE command - see documentation for more information."
+		print ""
+		return
+	tmpset2 = tmp_str.split(',')
+	if (len(tmpset2) == 0):
+		print "  PGL-029: Bad syntax for the BACKUP DATABASE command - see documentation for more information."
+		print ""
+		return
+	for i in range(len(tmpset2)):
+		if ((str(tmpset2[i]).startswith('GRANULARITY')) or (str(tmpset2[i]).startswith('granularity'))):
+			tmp1 = tmpset2[i]
+			tmp1 = tmp1.replace('GRANULARITY','')
+			tmp1 = tmp1.replace('granularity','')
+			tmp1 = tmp1.replace('=','')
+			tmp1 = tmp1.strip()
+			tmp1 = tmp1.lower()
+			if (tmp1 == ""):
+				print "  PGL-032: Missing or unknown granularity for the backup command - see documentation for more information."
+				print ""
+				return
+			if (tmp1 == "database"):
+				tmp_granularity = "database"
+			if (tmp1 == "tables"):
+				tmp_granularity = "tables"
+			if (tmp_granularity == ""):
+				print "  PGL-032: Missing or unknown granularity for the backup command - see documentation for more information."
+				print ""
+				return
+		if ((str(tmpset2[i].strip()).startswith('INVENTORY')) or (str(tmpset2[i].strip()).startswith('inventory'))):
+			if (tmp_granularity == "tables"):
+				tmp1 = tmpset2[i]
+				tmp1 = tmp1.replace('INVENTORY','')
+				tmp1 = tmp1.replace('inventory','')
+				tmp1 = tmp1.replace('=','')
+				tmp1 = tmp1.strip()
+				tmp1 = tmp1.lower()
+				if (tmp1 == ""):
+					print "  PGL-035: Missing or unknown inventory for the backup command - see documentation for more information."
+					print ""
+					return
+				tmp_tables = tmp1.split(';')
+				if (len(tmp_tables) == 0):
+					print "  PGL-037: Table inventory contains no tables to backup."
+					print ""
+					return
+		if ((str(tmpset2[i]).startswith('COMPRESSION')) or (str(tmpset2[i]).startswith('compression'))):
+			tmp1 = tmpset2[i]
+			tmp1 = tmp1.replace('COMPRESSION','')
+			tmp1 = tmp1.replace('compression','')
+			tmp1 = tmp1.replace('=','')
+			tmp1 = tmp1.strip()
+			tmp1 = tmp1.lower()
+			if (tmp1 == "on"):
+				tmp_compression = "on"
+			if (tmp1 == "off"):
+				tmp_compression = "off"
+			if (tmp1 == ""):
+				print "  PGL-040: Compression was not set properly - use either ON or OFF."
+				print ""
+				return
+	# backup decisions from now
+	tmp_filename = ""
+	tmp_filename = "PGL10"
+	for i in range(1,25):
+		tmp_filename = tmp_filename + str(randint(0,9))
+	tmp_filename = tmp_filename + ".pgl"
+	tmp_sql = sys_pg_dump + " -p " + str(sys_port) + " -d " + tmp_dbname + " -Fc "
+	repo_tables_list = ""
+	if (tmp_granularity == "tables"):
+		for i in range(len(tmp_tables)):
+			checked_table = tmp_tables[i]
+			repo_tables_list = repo_tables_list + checked_table + ";"
+			checked_table = checked_table.replace('"','')
+			tmp_qry = ""
+			if "." not in checked_table:
+				tmp_qry = "select count(*) from information_schema.tables where table_type = 'BASE TABLE' and table_name = '" + checked_table + "';"
+			else:
+				tbl_tmp = tbl.split('.')
+				tmp_qry = "select count(*) from information_schema.tables where table_type = 'BASE TABLE' and table_name = '" + tbl_tmp[1] + "' and table_schema = '" + tbl_tmp[0] + "';"
+			conn_tmp = psycopg2.connect(database=tmp_dbname)
+			cur_tmp = conn_tmp.cursor()
+			cur_tmp.execute(tmp_qry)
+			row = cur_tmp.fetchone()
+			tmp_counter = int(row[0])
+			conn_tmp.close()
+			if (tmp_counter == 0):
+				print "  PGL-048: Could not find table [" + checked_table + "] in database [" + tmp_dbname + "]. Stopping backup command."
+				print ""
+				return
+			else:
+				tmp_sql = tmp_sql + " -t " + checked_table + " "
+	if (tmp_compression == "on"):
+		print ""
+	else:
+		if (sys_dest.endswith("/")):
+			tmp_sql = tmp_sql + " > " + sys_dest + tmp_filename
+		else:
+			tmp_sql = tmp_sql + " > " + sys_dest + "/" + tmp_filename
+		# print ""
+	print ""
+	needs_to_do_repo = "yes"
+	if (sys_no_repo == "yes"):
+		print color.GREEN + "   NOTICE: " + color.END + "You are working with the '--no-repo' flag. This backup was not registered to the repository."
+		needs_to_do_repo = "no"
+	if ((sys_no_repo == "no") and (is_connected == "no")):
+		print "   WARNING: There is no connection to the repository or the repository doesn't exist. Backup is NOT stopped."
+		needs_to_do_repo = "no"
+	print "   " + color.BOLD + color.GREEN + "Starting Backup, Please Wait..." + color.END
+	print "   FYI: The backup file is - " + tmp_filename + color.END
+	try:
+		os.system(tmp_sql)
+	except:
+		print color.RED + color.BOLD + "   The backup process exited with an unknown error." + color.END
+		print "   " + color.BOLD + "FYI:" + color.END + " The physical file might exist after this error but the repository would not consider it as valid."
+		return
+	print "   Backup is done." + color.END
+	if (needs_to_do_repo == "yes"):
+		reposql = ""
+		tmp_final_repo_sql_destination = ""
+		if (sys_dest.endswith("/")):
+			tmp_final_repo_sql_destination = sys_dest + tmp_filename
+		else:
+			tmp_final_repo_sql_destination = sys_dest + "/" + tmp_filename
+		tmp_file_size_kb = os.path.getsize(tmp_final_repo_sql_destination)
+		repo_tables_list = repo_tables_list.replace('"','')
+		reposql = "insert into pgl.backuplog (db_name,task_type,tables_inventory,start_date,file_name,file_size_kb,is_compressed,is_from_job) values ('" + tmp_dbname + "','" + tmp_granularity + "','" + repo_tables_list + "',current_timestamp,'" + tmp_final_repo_sql_destination + "',(" + str(tmp_file_size_kb) + "/1024),"
+		if (tmp_compression == "on"):
+			reposql = reposql + "1::bit,0::bit);"
+		else:
+			# reposql = reposql + "0::bit);"
+			# fix: as all -Fc are compressed... this will always be 1
+			reposql = reposql + "1::bit,0::bit);"
+		conn_tmp_repo = psycopg2.connect(database="postgres")
+		cur_tmp_repo = conn_tmp_repo.cursor()
+		cur_tmp_repo.execute(reposql)
+		conn_tmp_repo.commit()
+		conn_tmp_repo.close()
+	print ""
+
+def now_yyyymmddhhmm():
+	dt = datetime.datetime.now()
+	r = ""
+	r = str(dt.year)
+	if (len(str(dt.month) == 1)):
+		r = r + "0" + str(dt.month)
+	else:
+		r = r + str(dt.month)
+	if (len(str(dt.day) == 1)):
+		r = r + "0" + str(dt.day)
+	else:
+		r = r + str(dt.day)
+	if (len(str(dt.hour) == 1)):
+		r = r + "0" + str(dt.hour)
+	else:
+		r = r + str(dt.hour)
+	if (len(str(dt.minute) == 1)):
+		r = r + "0" + str(dt.minute)
+	else:
+		r = r + str(dt.minute)
+	return r
+
+def change_log_status(c):
+	global sys_log_state
+	print ""
+	if (c.lower() == "resume"):
+		sys_log_state = "resume"
+		print "   " + color.BOLD + "FYI:" + color.END + " The error/info log status was changed to RESUME mode."
+		print ""
+	if (c.lower() == "stop"):
+		sys_log_state = "stop"
+		print "   " + color.BOLD + "FYI:" + color.END + " The error/info log status was changed to STOP mode."
+		print ""
+
+def handle_lookup(c):
+	global is_connected
+	global sys_no_repo
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	c = c.strip()
+	tmp = c.split(' ');
+	if ((str(tmp[1]).lower() != "database") and (str(tmp[1]).lower() != "table") and (str(tmp[1]).lower() != "configs")):
+		print ""
+		print "   PGL-060: Bad or wrong number of arguments for the LOOKUP command - see documentation for more information."
+		print ""
+		return
+	conn_lookup = psycopg2.connect(database="postgres")
+	if (str(tmp[1]).lower() == "configs"):
+		cur_lookup = conn.cursor()
+		cur_lookup.execute("select count(*),coalesce(sum(file_size_kb),0) from pgl.configslog;")
+		row_lookup = cur_lookup.fetchone()
+		if (int(row_lookup[0]) == 0):
+			print ""
+			print "  " + color.DARKCYAN + "There are no configrations files entries on the repository." + color.END
+		else:
+			print ""
+			print color.BOLD + "   Configurations Lookup Report" + color.END
+			print color.BOLD + "   =====================================================================================================================================" + color.END
+			print "     Total Files:         " + color.BOLD + str(row_lookup[0]) + color.END
+			print "     Total Files Size:    " + color.BOLD + str(row_lookup[1]) + " KB" + color.END
+			print ""
+			print "     " + color.BOLD + "Backup Parts Report" + color.END
+			print "     -----------------------------------------------------------------------------------------------------------------------------------"
+			print "     Part#    Backup Date        File Size (KB)   File Status     File Full Path/Name"
+			print "     -------- ------------------ ---------------- --------------- ----------------------------------------------------------------------"
+			cur_lookup = conn.cursor()
+			cur_lookup.execute("select rpad(rowid::varchar,8,' '),rpad(to_char(configs_date,'YYYY-MM-DD HH24:MI'),18,' '),rpad(file_size_kb::varchar,12,' '),rpad(file_name,70,' ') from pgl.configslog order by configs_date desc limit 10;")
+			rows_lookup = cur_lookup.fetchall()
+			for row in rows_lookup:
+				tmp_check = os.path.exists(str(row[3]).strip())
+				if (tmp_check == False):
+					print "     " + row[0] + " " + row[1] + " " + row[2] + " KB  " + color.RED + "Not Found      " + color.END + "  " + row[3]
+				else:
+					print "     " + row[0] + " " + row[1] + " " + row[2] + " KB  " + color.GREEN + "File Exists    " + color.END + "  " + row[3]
+		conn_lookup.close()
+		print ""
+	if (str(tmp[1]).lower() == "database"):
+		if (len(tmp) != 3):
+			conn_lookup.close()
+			print ""
+			print "   PGL-060: Bad or wrong number of arguments for the LOOKUP command - see documentation for more information."
+			return
+		cur_lookup = conn.cursor()
+		cur_lookup.execute("select count(*),COALESCE(sum(file_size_kb),0) from pgl.backuplog where db_name = '" + tmp[2] + "' and task_type = 'database';")
+		row_lookup = cur_lookup.fetchone()
+		if (int(row_lookup[0]) == 0):
+			print ""
+			print "  " + color.DARKCYAN + "Database [" + color.BOLD + tmp[2] + color.END + color.DARKCYAN + "] has no entries on the repository." + color.END
+		else:
+			print ""
+			print color.BOLD + "   Database Lookup Report" + color.END
+			print color.BOLD + "   =====================================================================================================================================" + color.END
+			print "     Total Files:         " + color.BOLD + str(row_lookup[0]) + color.END
+			print "     Total Files Size:    " + color.BOLD + str(row_lookup[1]) + " KB" + color.END
+			print ""
+			print "     " + color.BOLD + "Backup Parts Report" + color.END
+			print "     -----------------------------------------------------------------------------------------------------------------------------------"
+			print "     Part#    Backup Date        File Size (KB)   File Status     File Full Path/Name"
+			print "     -------- ------------------ ---------------- --------------- ----------------------------------------------------------------------"
+			cur_lookup = conn.cursor()
+			cur_lookup.execute("select rpad(rowid::varchar,8,' '),rpad(to_char(start_date,'YYYY-MM-DD HH24:MI'),18,' '),rpad(file_size_kb::varchar,12,' '),rpad(file_name,70,' ') from pgl.backuplog where db_name = '" + tmp[2] + "' and task_type = 'database' order by start_date desc limit 20;")
+			rows_lookup = cur_lookup.fetchall()
+			for row in rows_lookup:
+				tmp_check = os.path.exists(str(row[3]).strip())
+				if (tmp_check == False):
+					print "     " + row[0] + " " + row[1] + " " + row[2] + " KB  " + color.RED + "Not Found      " + color.END + "  " + row[3]
+				else:
+					print "     " + row[0] + " " + row[1] + " " + row[2] + " KB  " + color.GREEN + "File Exists    " + color.END + "  " + row[3]
+		conn_lookup.close()
+		print ""
+	if (str(tmp[1]).lower() == "table"):
+		if (len(tmp) != 3):
+			conn_lookup.close()
+			print ""
+			print "   PGL-060: Bad or wrong number of arguments for the LOOKUP command - see documentation for more information."
+			return
+		print ""
+		print color.BOLD + "   Table Lookup Report" + color.END
+		print color.BOLD + "   ==========================================================================================================================================================" + color.END
+		cur_lookup = conn.cursor()
+		cur_lookup.execute("select count(*),COALESCE(sum(file_size_kb),0) from pgl.backuplog where tables_inventory is not null and ((tables_inventory like '%," + tmp[2] + ",%') or (tables_inventory = '" + tmp[2] + "')) and task_type = 'tables';")
+		row_lookup = cur_lookup.fetchone()
+		print "     Total Files:         " + color.BOLD + str(row_lookup[0]) + color.END
+		print "     Total Files Size:    " + color.BOLD + str(row_lookup[1]) + " KB" + color.END
+		print ""
+		print "     " + color.BOLD + "Backup Parts Report" + color.END
+		print "     --------------------------------------------------------------------------------------------------------------------------------------------------------"
+		print "     Part#    Backup Date        Database Name                            File Size (KB)   File Status     File Full Path/Name"
+		print "     -------- ------------------ ---------------------------------------- ---------------- --------------- --------------------------------------------------"
+		cur_lookup = conn.cursor()
+		cur_lookup.execute("select rpad(rowid::varchar,8,' '),rpad(to_char(start_date,'YYYY-MM-DD HH24:MI'),18,' '),rpad(file_size_kb::varchar,12,' '),rpad(file_name,70,' '),rpad(db_name,40,' ') from pgl.backuplog where task_type = 'tables' and ((tables_inventory like '%," + tmp[2] + ",%') or (tables_inventory = '" + tmp[2] + "')) order by start_date desc limit 20;")
+		rows_lookup = cur_lookup.fetchall()
+		for row in rows_lookup:
+			tmp_check = os.path.exists(str(row[3]).strip())
+			if (tmp_check == False):
+				print "     " + row[0] + " " + row[1] + " " + row[4] + " " + row[2] + " KB  " + color.RED + "Not Found     " + color.END + "  " + row[3]
+			else:
+				print "     " + row[0] + " " + row[1] + " " + row[4] + " " + row[2] + " KB  " + color.GREEN + "File Exists   " + color.END + "  " + row[3]
+		print ""
+		conn_lookup.close()
+
+def handle_configs_backup():
+	global sys_dest
+	tmp_config_file = ""
+	tmp_hba_file = ""
+	tmp_ident_file = ""
+	tmp_filename = ""
+	tmp_cmd = ""
+	tmp_filesize_kb = 0
+	tmp_path = ""
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	tmp_con = psycopg2.connect(database="postgres")
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select name,setting from pg_settings where name in ('config_file','hba_file','ident_file');")
+	tmp_rows = tmp_cur.fetchall()
+	for row in tmp_rows:
+		if (str(row[0]) == "config_file"):
+			tmp_config_file = str(row[1])
+		if (str(row[0]) == "hba_file"):
+			tmp_hba_file = str(row[1])
+		if (str(row[0]) == "ident_file"):
+			tmp_ident_file = str(row[1])
+	if ((tmp_config_file == "") or (tmp_hba_file == "") or (tmp_ident_file == "")):
+		tmp_con.close()
+		print ""
+		print "   PGL-065: One or more system catalog entries is missing or you do not have permmissions."
+		return
+	if (os.path.exists(tmp_config_file.strip()) == False):
+		tmp_con.close()
+		print ""
+		print "   PGL-067: Could not find [postgresql.conf] according to the system catalog."
+		return
+	if (os.path.exists(tmp_hba_file.strip()) == False):
+		tmp_con.close()
+		print ""
+		print "   PGL-067: Could not find [pg_hba.conf] according to the system catalog."
+		return
+	if (os.path.exists(tmp_ident_file.strip()) == False):
+		tmp_con.close()
+		print ""
+		print "   PGL-067: Could not find [pg_ident.conf] according to the system catalog."
+		return
+	tmp_filename = "PGL10"
+	for i in range(1,25):
+		tmp_filename = tmp_filename + str(randint(0,9))
+	tmp_filename = tmp_filename + ".pgl"
+	if (str(sys_dest.lower()).endswith('/') == True):
+		tmp_filename = sys_dest + tmp_filename
+	else:
+		tmp_filename = sys_dest + "/" + tmp_filename
+	tmp_cmd = "tar -cf " + tmp_filename + " " + tmp_config_file + " " + tmp_hba_file + " " + tmp_ident_file + " &> /dev/null"
+	try:
+		# this line is the original:
+		# os.system(tmp_cmd)
+		os.system('touch ' + tmp_filename)
+		os.system('echo "#PGL_FILE_CREATE_DATE = $(date)" >> ' + tmp_filename)
+		os.system('echo "#START POSTGRESQL.CONF" >> ' + tmp_filename)
+		os.system('cat ' + tmp_config_file + ' >> ' + tmp_filename)
+		os.system('echo "#END POSTGRESQL.CONF" >> ' + tmp_filename)
+		os.system('echo "#START PG_HBA.CONF" >> ' + tmp_filename)
+		os.system('cat ' + tmp_hba_file + ' >> ' + tmp_filename)
+		os.system('echo "#END PG_HBA.CONF" >> ' + tmp_filename)
+		os.system('echo "#START PG_IDENT.CONF" >> ' + tmp_filename)
+		os.system('cat ' + tmp_ident_file + ' >> ' + tmp_filename)
+		os.system('echo "#END PG_IDENT.CONF" >> ' + tmp_filename)
+	except IOError,err:
+		tmp_con.close()
+		print ""
+		print "   PGL-068: Got operating system error [#" + str(err.errno) + "]."
+		return
+	except:
+		tmp_con.close()
+		print ""
+		print "   PGL-070: Got operating system error when using TAR for this command."
+		return
+	tmp_filesize_kb = os.path.getsize(tmp_filename)
+	tmp_filesize_kb = (tmp_filesize_kb/1024)
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("insert into pgl.configslog (configs_date,file_name,file_size_kb) values (current_timestamp,'" + tmp_filename + "'," + str(tmp_filesize_kb) + ");")
+	tmp_con.commit()
+	tmp_con.close()
+	print ""
+	print "   " + color.BOLD + "Created Configuration Backup." + color.END
+	print "   FYI: The generated file name is: " + tmp_filename
+	print ""
+
+def handle_drop_part(c):
+	global is_connected
+	global sys_no_repo
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	tmp_part_type = ""
+	tmp_full_path = ""
+	tmp_backup_count = 0
+	tmp_config_count = 0
+	c = c.lower()
+	tmp = c.replace("drop","")
+	tmp = tmp.replace("part","")
+	tmp = tmp.strip()
+	tmp_con = psycopg2.connect(database="postgres")
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select (select count(*) from pgl.backuplog where rowid = " + tmp + "),(select count(*) from pgl.configslog where rowid = " + tmp + ");")
+	row = tmp_cur.fetchone()
+	tmp_backup_count = int(row[0])
+	tmp_config_count = int(row[1])
+	if ((tmp_backup_count == 0) and (tmp_config_count == 0)):
+		tmp_con.close()
+		print ""
+		print "   PGL-072: The given part number [" + color.BOLD + tmp + color.END + "] could not be found. Please check and try again."
+		return
+	if (tmp_backup_count > 0):
+		tmp_part_type = "backup"
+	if (tmp_config_count > 0):
+		tmp_part_type = "config"
+	tmp_sql = ""
+	if (tmp_part_type == "backup"):
+		tmp_sql = "select file_name from pgl.backuplog where rowid = " + tmp + ";"
+	if (tmp_part_type == "config"):
+		tmp_sql = "select file_name from pgl.configslog where rowid = " + tmp + ";"
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute(tmp_sql)
+	row2 = tmp_cur.fetchone()
+	if ((row2 == None) or (tmp_cur.rowcount == 0)):
+		tmp_con.close()
+		print ""
+		print "   PGL-075: Could not determine the file name for the specified part number."
+		return
+	tmp_full_path = row2[0]
+	if (tmp_full_path == ""):
+		tmp_con.close()
+		print ""
+		print "   PGL-075: Could not determine the file name for the specified part number."
+		return
+	## as permission from user
+	print ""
+	print "   " + color.BOLD + "Please Confirm:" + color.END
+	print "   -------------------------------------------------------------------------------"
+	print "   You are about to remove the following file physically and from the repository:"
+	print "   File Type:   " + color.BOLD + tmp_part_type.upper() + color.END
+	print "   File Name:   " + color.BOLD + tmp_full_path + color.END
+	print ""
+	tmp_approval = raw_input("   Please approve the deletion of this entry and file: " + color.BOLD + "[Y/N]" + color.END + ": ")
+	if (tmp_approval.lower() != "y"):
+		tmp_con.close()
+		print ""
+		print "   PGL-080: You failed to approve the continuation of the process. Stopping here."
+		return
+	try:
+		os.system('rm -f ' + tmp_full_path)
+	except:
+		tmp_con.close()
+		print ""
+		print "   PGL-077: Could not physically delete the file from the disk - operation canceled."
+		return
+	tmp_cur = tmp_con.cursor()
+	if (tmp_part_type == "backup"):
+		tmp_cur.execute("delete from pgl.backuplog where rowid = " + tmp + ";")
+	if (tmp_part_type == "config"):
+		tmp_cur.execute("delete from pgl.configslog where rowid = " + tmp + ";")
+	tmp_con.commit()
+	tmp_con.close()
+	print ""
+	print "   " + color.BOLD + "FYI:" + color.END + " The part was physically deleted and removed from the repository."
+
+def handle_restore_part(c):
+	global is_connected
+	global sys_no_repo
+	global sys_psql
+	restore_final_command = ""
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	tmp = c.lower()
+	tmp = tmp.replace('restore','')
+	tmp = tmp.replace('part','')
+	tmp = tmp.strip()
+	if (unicode(tmp).isnumeric() == False):
+		print ""
+		print "   PGL-082: Given non numeric value."
+		print ""
+		return
+	restorepart_con = psycopg2.connect(database="postgres")
+	restorepart_cur = restorepart_con.cursor()
+	restorepart_cur.execute("select count(*) from pgl.backuplog where rowid = " + tmp + ";")
+	restorepart_row = restorepart_cur.fetchone()
+	if (int(restorepart_row[0]) == 0):
+		restorepart_con.close()
+		print ""
+		print "   PGL-084: Could not find part according to given value [" + tmp + "]."
+		print ""
+		return
+	restorepart_cur = restorepart_con.cursor()
+	restorepart_cur.execute("select rowid,db_name,task_type,tables_inventory,to_char(start_date,'YYYY-MM-DD HH24:MI'),file_name from pgl.backuplog where rowid = " + tmp + ";")
+	restorepart_row = restorepart_cur.fetchone()
+	restorepart_filename = restorepart_row[5]
+	tmp_restore_dbname = restorepart_row[1]
+	tmp_db_count = 0
+	print ""
+	print "   Review And Confirm Part Information:"
+	print "   --------------------------------------------------------------------"
+	print "   Part #:           " + color.BOLD + tmp + color.END
+	print "   Database Name:    " + color.BOLD + restorepart_row[1] + color.END
+	if (str(restorepart_row[2]).lower() == "database"):
+		print "   Restore Type:     " + color.BOLD + "Database" + color.END
+	if (str(restorepart_row[2]).lower() == "tables"):
+		print "   Restore Type:     " + color.BOLD + "Tables" + color.END
+		print "   Table List:       " + color.BOLD + restorepart_row[3] + color.END
+	print "   Part Date/Time:   " + color.BOLD + restorepart_row[4] + color.END
+	print "   Physical File:    " + color.BOLD + restorepart_row[5] + color.END
+	print ""
+	restore_final_command = sys_pg_restore + " -c -C -d " + tmp_restore_dbname + " " + restorepart_row[5]
+	restorepart_cur = restorepart_con.cursor()
+	restorepart_cur.execute("select count(*) from pg_database where datname = '" + tmp_restore_dbname + "';")
+	tmp_row = restorepart_cur.fetchone()
+	tmp_recreate_db = "no"
+	if (int(tmp_row[0]) == 0):
+		tmp_recreate_db = "yes"
+	print ""
+	if (tmp_recreate_db == "yes"):
+		print "   " + color.BOLD + "FYI: " + color.END + "The selected database was not found - this process will recreate the database as well."
+	tmp_question = raw_input("   " + color.BOLD + "The above database/tables will be over written - please confirm [Y/N]: " + color.END)
+	if (tmp_question.lower() == "n"):
+		print ""
+		return
+	if (tmp_question.lower() == "y"):
+		try:
+			if (tmp_recreate_db == "yes"):
+				print "   " + color.BOLD + "Recreating Database..." + color.END
+				os.system(sys_psql + ' -c "CREATE DATABASE ' + tmp_restore_dbname + ' ENCODING = \'UTF8\' CONNECTION LIMIT = -1;"')
+			os.system(restore_final_command)
+			print ""
+		except:
+			restorepart_con.close()
+			print "   " + color.BOLD + color.RED + "The restore process failed." + color.END
+			print ""
+		restorepart_con.close()
+
+def handle_terminal_command(c):
+	print ""
+	tmp = c.replace('!','')
+	os.system(tmp)
+	print ""
+
+def handle_soft_drop_part(c):
+	global is_connected
+	global sys_no_repo
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	tmp = c.lower()
+	tmp = tmp.replace("softdrop","")
+	tmp = tmp.replace("part","")
+	tmp = tmp.strip()
+	print ""
+	tmp_appr = raw_input("   You are about to delete/drop repository valus. Please confirm [y/n]: ")
+	if (tmp_appr.lower() != "y"):
+		print ""
+		print "   PGL-080: You failed to approve the continuation of the process. Stopping here."
+		return
+	if (tmp_appr.lower() == "y"):
+		tmp_con = psycopg2.connect(database="postgres")
+		tmp_cur = tmp_con.cursor()
+		tmp_cur.execute("delete from pgl.backuplog where rowid = " + tmp + "; delete from pgl.configslog where rowid = " + tmp + ";")
+		tmp_con.commit()
+		tmp_con.close()
+	print ""
+
+def service_status_all():
+	print ""
+	print color.BOLD + "   System Services Report" + color.END
+	print ""
+	print "   Service Name          Service Description                                       Service Status"
+	print "   --------------------- --------------------------------------------------------- ---------------"
+	tmp_con = psycopg2.connect(database="postgres")
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select rpad(service_code,21,' '),rpad(service_desc,55,' '),case service_enabled::int when 0 then 'Disabled' when 1 then 'Enabled' end from pgl.services;")
+	tmp_rows = tmp_cur.fetchall()
+	for row in tmp_rows:
+		if (str(row[2]).lower() == "disabled"):
+			print "   " + color.BOLD + row[0] + color.END + " " + row[1] + "   " + color.RED + row[2] + color.END
+		if (str(row[2]).lower() == "enabled"):
+			print "   " + color.BOLD + row[0] + color.END + " " + row[1] + "   " + color.GREEN + row[2] + color.END
+	tmp_con.close()
+	print ""
+
+def handle_current_dbs():
+	global is_connected
+	global sys_no_repo
+	dbs_total_size = 0
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	dbs_con = psycopg2.connect(database="postgres")
+	dbs_cur = dbs_con.cursor()
+	dbs_cur.execute("select sum(pg_database_size(a.datname))::bigint from pg_database a where a.datname not in ('postgres','template0','template1');")
+	dbs_rows = dbs_cur.fetchone()
+	dbs_total_size = int(dbs_rows[0])
+	dbs_cur = dbs_con.cursor()
+	dbs_cur.execute("select 	rpad(a.datname,30,' '),rpad((pg_database_size(a.datname)/1024)::varchar,15,' '),((pg_database_size(a.datname)*100)/" + str(dbs_total_size) + ")::int,rpad((select count(*) from pgl.backuplog b where b.db_name = a.datname and b.task_type = 'database')::varchar || ' Files',15,' '),rpad((select count(*) from pgl.backuplog b where b.db_name = a.datname and b.task_type = 'tables')::varchar || ' Files',15,' ') from pg_database a where a.datname not in ('postgres','template0','template1') order by 2 desc;")
+	dbs_rows = dbs_cur.fetchall()
+	print ""
+	print color.BOLD + "   Local PostgreSQL Databases Layout" + color.END
+	print color.BOLD + "   ---------------------------------------------------------------------------------------------" + color.END
+	print "   Database Name                  Database Size     Usage(%)     Database Files  Table Files"
+	print "   ------------------------------ ----------------- ------------ --------------- ---------------"
+	for row in dbs_rows:
+		tmp_percent_string = ""
+		# unichr(0x2588)
+		if (int(row[2]) <= 10):
+			tmp_percent_string = "[" + "#" + "         ]"
+		if ((int(row[2]) > 10) and (int(row[2]) <= 20)):
+			tmp_percent_string = "[" + "#" + "#" + "        ]"
+		if ((int(row[2]) > 20) and (int(row[2]) <= 30)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "       ]"
+		if ((int(row[2]) > 30) and (int(row[2]) <= 40)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "#" + "      ]"
+		if ((int(row[2]) > 40) and (int(row[2]) <= 50)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "#" + "#" + "     ]"
+		if ((int(row[2]) > 50) and (int(row[2]) <= 60)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "#" + "#" + "#" + "    ]"
+		if ((int(row[2]) > 60) and (int(row[2]) <= 70)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "   ]"
+		if ((int(row[2]) > 70) and (int(row[2]) <= 80)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "  ]"
+		if ((int(row[2]) > 80) and (int(row[2]) <= 90)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + " ]"
+		if ((int(row[2]) > 90) and (int(row[2]) <= 101)):
+			tmp_percent_string = "[" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "#" + "]"
+		# tmp_percent_string = color.BOLD + tmp_percent_string + color.END
+		print "   " + str(row[0]) + " " + str(row[1]) + "KB " + tmp_percent_string + " " + str(row[3]) + " " + str(row[4])
+	print ""
+	dbs_con.close()
+
+def handle_create_job(c):
+	global is_connected
+	global sys_no_repo
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	tmp = shlex.split(c)
+	if (len(tmp) < 5):
+		print ""
+		print "   PGL-090: Bad or missing parameters for the CREATE JOB command - see documentation for more information."
+		print ""
+		return
+	if ((len(tmp) == 5) and (str(tmp[3]).lower() == "as")):
+		if not (re.match("^[A-Za-z0-9]*$",tmp[2])):
+			print ""
+			print "   PGL-091: The job name must contain only the letters A-Z/a-z and digits (0-9)."
+			print ""
+			return
+		if (str(tmp[3]).lower() != "as"):
+			print ""
+			print "   PGL-090: Bad or missing parameters for the CREATE JOB command - see documentation for more information."
+			print ""
+			return
+		if not (re.match("^[0-9]*$",tmp[4])):
+			print ""
+			print "   PGL-092: The template part name/number is invalid or does not exist."
+			print ""
+			return
+		dbs_con = psycopg2.connect(database="postgres")
+		dbs_cur = dbs_con.cursor()
+		dbs_cur.execute("select count(*) from pgl.backuplog where rowid = " + tmp[4] + ";")
+		row = dbs_cur.fetchone()
+		if (int(row[0]) == 0):
+			dbs_con.close()
+			print ""
+			print "   PGL-092: The template part name is invalid or does not exist."
+			print ""
+			return
+		dbs_cur = dbs_con.cursor()
+		dbs_cur.execute("select count(*) from pgl.jobs where job_name = '" + tmp[2] + "';")
+		row = dbs_cur.fetchone()
+		if (int(row[0]) > 0):
+			dbs_con.close()
+			print ""
+			print "   PGL-094: There is a job called [" + tmp[2] + "] registered."
+			print ""
+			return
+		dbs_cur = dbs_con.cursor()
+		dbs_cur.execute("insert into pgl.jobs (job_name,db_name,task_type,tables_inventory,last_runtime,next_runtime,is_enabled,is_running_now,use_compression,interval_minutes,retention_minutes) values ('" + str(tmp[2]) + "',(select a.db_name from pgl.backuplog a where a.rowid = " + str(tmp[4]) + "),(select a.task_type from pgl.backuplog a where a.rowid = " + str(tmp[4]) + "),(select a.tables_inventory from pgl.backuplog a where a.rowid = " + str(tmp[4]) + "),null,null,0::bit,0::bit,0::bit,0,0);")
+		dbs_con.commit()
+		dbs_con.close()
+		print ""
+		print "   " + color.BOLD + color.GREEN + "The job was created succesfully." + color.END
+		print "   Please review the job, change its options (using the ALTER JOB command) and the enable it."
+		print ""
+		return
+	if ((len(tmp) == 5) and (str(tmp[3]).lower() == "with") and (str(tmp[4]).lower() == "wizard")):
+		con = psycopg2.connect(database="postgres")
+		cur = con.cursor()
+		cur.execute("select count(*) from pgl.jobs where job_name = '" + str(tmp[2]) + "';")
+		row = cur.fetchone()
+		if (int(row[0]) > 0):
+			con.close()
+			print ""
+			print "   PGL-094: There is a job called [" + tmp[2] + "] registered."
+			print ""
+			return
+		if not (re.match("^[A-Za-z0-9]*$",tmp[2])):
+			print ""
+			print "   PGL-091: The job name must contain only the letters A-Z/a-z and digits (0-9)."
+			print ""
+			return
+		print ""
+		print color.BOLD + "   Please answer the following questions to create the new backup job." + color.END
+		print color.BOLD + "   --------------------------------------------------------------------" + color.END
+		print ""
+		tmp_jobname = tmp[2]
+		print "   New Job Name.......................: " + tmp_jobname
+		tmp_databasename = raw_input("   Database Name......................: ")
+		if (tmp_databasename == ""):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [database name]."
+			print ""
+			return
+		cur = con.cursor()
+		cur.execute("select count(*) from pg_database where datname = '" + str(tmp_databasename) + "';")
+		row = cur.fetchone()
+		if (int(row[0]) == 0):
+			con.close()
+			print ""
+			print "   PGL-152: The database [" + str(tmp_databasename) + "] does not exist."
+			print ""
+			return
+		tmp_jobtype = raw_input("   Job Type (1=DB/2=TABLES)...........: ")
+		if ((tmp_jobtype != "1") and (tmp_jobtype != "2")):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [job type]."
+			print ""
+			return
+		if (tmp_jobtype == ""):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [job type]."
+			print ""
+			return
+		tmp_tables = ""
+		if (tmp_jobtype == "2"):
+			tmp_tables = raw_input("   Table Names (Seperated By Comma)...: ")
+			if (len(tmp_tables) == 0):
+				con.close()
+				print ""
+				print "   PGL-151: Missing or bad information [table list]."
+				print ""
+				return
+			if '"' in tmp_tables:
+				con.close()
+				print ""
+				print "   PGL-151: Missing or bad information [table list]."
+				print ""
+				return
+			tmp_tables = tmp_tables.strip()
+			tmp_check1 = tmp_tables.split(',')
+			for t1 in tmp_check1:
+				con1 = psycopg2.connect(database=tmp_databasename)
+				cur1 = con1.cursor()
+				cur1.execute("select count(*) from pg_tables where tablename = '" + t1 + "' and schemaname not in ('pg_catalog','information_schema');")
+				row1 = cur1.fetchone()
+				if (int(row1[0]) == 0):
+					con1.close()
+					print ""
+					print "   PGL-158: The table you entered [" + t1 + "] does not exist on database [" + tmp_databasename + "]."
+					print ""
+					return
+				con1.close()
+		tmp_interval = raw_input("   Job Interval (Minutes).............: ")
+		if (tmp_interval == ""):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [interval]."
+			print ""
+			return
+		if (unicode(tmp_interval).isnumeric() == False):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [interval]."
+			print ""
+			return
+		if ((int(tmp_interval) < 10) or (int(tmp_interval) > 20160)):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [interval]."
+			print ""
+			return
+		tmp_retention = raw_input("   Job Retention (Minutes)............: ")
+		if (tmp_retention == ""):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [retention]."
+			print ""
+			return
+		if (unicode(tmp_retention).isnumeric() == False):
+			con.close()
+			print ""
+			print "   PGL-151: Missing or bad information [retention]."
+			print ""
+			return
+		if (int(tmp_retention) <= int(tmp_interval)):
+			con.close()
+			print ""
+			print "   PGL-159: The retention period is shorter than the interval period."
+			print ""
+			return
+		the_sql = "insert into pgl.jobs (job_name,db_name,task_type,tables_inventory,last_runtime,next_runtime,is_enabled,is_running_now,use_compression,interval_minutes,retention_minutes) values ('" + tmp_jobname + "','" + tmp_databasename + "',"
+		if (tmp_jobtype == "1"):
+			the_sql = the_sql + "'database',null,"
+		if (tmp_jobtype == "2"):
+			the_sql = the_sql + "'tables','" + tmp_tables + "',"
+		the_sql = the_sql + "null,(current_timestamp + interval '" + tmp_interval + " minute'),1::bit,0::bit,0::bit," + tmp_interval + "," + tmp_retention + ");"
+		cur = con.cursor()
+		cur.execute(the_sql);
+		con.commit()
+		con.close()
+		print ""
+		print color.GREEN + "   The job created succesfully." + color.END
+		print "   The job will run in " + tmp_interval + " minutes from now."
+		print ""
+		return
+	print ""
+
+def check_if_tables_exists(dbname,tables_string):
+	r = 1
+	con = psycopg2.connect(database=dbname)
+	cur = con.cursor()
+	tmp = shlex.split(tables_string,",")
+	for i in len(tmp):
+		cur.execute("select count(*) from pg_tables where table_name = '" + tmp[i] + "';")
+		row = cur.fetchone()
+		if (int(row[0]) == 0):
+			r = 0
+	con.close()
+	return r
+
+def check_if_database_exists(dbname):
+	r = 0
+	con = psycopg2.connect(database="postgres")
+	cur = con.cursor()
+	cur.execute("select count(*) from pg_database where datname = '" + dbname + "';")
+	row = cur.fetchone()
+	if (int(row[0]) > 0):
+		r = 1
+	if (int(row[0]) == 0):
+		r = 0
+	con.close()
+	return r
+
+def handle_drop_job_command(c):
+	global is_connected
+	global sys_no_repo
+	if ((is_connected == "no") or ((is_connected == "yes") and (sys_no_repo == "yes"))):
+		print ""
+		print "   PGL-063: Repository is not reachable or the '--no-repo' was passed."
+		print ""
+		return
+	tmp = shlex.split(c)
+	if (len(tmp) < 3):
+		print ""
+		print "   PGL-098: Not enough parameters/arguments for the DROP JOB command."
+		print ""
+		return
+	con = psycopg2.connect(database="postgres")
+	cur = con.cursor()
+	cur.execute("select count(*) from pgl.jobs where job_name = '" + tmp[2] + "';")
+	row = cur.fetchone()
+	if (int(row[0]) == 0):
+		con.close()
+		print ""
+		print "   PGL-220: The job name was not found on the repository."
+		print ""
+		return
+	print ""
+	print "   FYI: Deleting a job will NOT delete it's related files."
+	a = raw_input("   Are you sure you would like to drop/delete the job [" + color.BOLD + tmp[2] + color.END + "] ? (Y\N):  ")
+	if ((a == "") or ((a != "Y") and (a != "N"))):
+		con.close()
+		print ""
+		print "   PGL-221: Bad selection made - aborting."
+		print ""
+		return
+	if (a == "Y"):
+		cur = con.cursor()
+		cur.execute("delete from pgl.jobs where job_name = '" + tmp[2] + "';");
+		con.commit()
+		con.close()
+		print ""
+		return
+	con.close()
+	print ""
+
+def restore_config_procedure(c):
+	global sys_restart_command
+	confrestore_file_name = ""
+	confrestore_file_date = ""
+	confrestore_postgresql_conf = ""
+	confrestore_hba_conf = ""
+	confrestore_ident_conf = ""
+	confrestore_folder_path = ""
+	if (sys_restart_command == ""):
+		print ""
+		print "   PGL-097: The system restart command was not set - see documentation for more details."
+		print ""
+		return
+	tmp = shlex.split(c)
+	if (len(tmp) != 5):
+		print ""
+		print "   PGL-098: Not enough parameters/arguments for the RESTORE CONFIG command."
+		print ""
+		return
+	if (unicode(tmp[2]).isnumeric() == False):
+		print ""
+		print "   PGL-102: The part number given is not numeric and invalid."
+		print ""
+		return
+	if ((str(tmp[3]).lower() != "with") and (str(tmp[3]).lower() != "without")):
+		print ""
+		print "   PGL-106: Bad syntax for the RESTORE CONFIG command."
+		print ""
+		return
+	if (str(tmp[4]).lower() != "restart"):
+		print ""
+		print "   PGL-106: Bad syntax for the RESTORE CONFIG command."
+		print ""
+		return
+	tmp_con = psycopg2.connect(database="postgres")
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select count(*) from pgl.configslog where rowid = " + str(tmp[2]) + ";")
+	row = tmp_cur.fetchone()
+	if (int(row[0]) == 0):
+		tmp_con.close()
+		print ""
+		print "   PGL-104: Could not find config part #" + str(tmp[2]) + ". Issue the LOOKUP CONFIGS command."
+		print ""
+		return
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select to_char(configs_date,'YYYY-MM-DD HH24:MI'),file_name from pgl.configslog where rowid = " + str(tmp[2]) + ";")
+	row = tmp_cur.fetchone()
+	confrestore_file_date = str(row[0])
+	confrestore_file_name = str(row[1])
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select (select setting from pg_settings where name = 'config_file'),(select setting from pg_settings where name = 'hba_file'),(select setting from pg_settings where name = 'ident_file');")
+	row = tmp_cur.fetchone()
+	confrestore_postgresql_conf = row[0]
+	confrestore_hba_conf = row[1]
+	confrestore_ident_conf = row[2]
+	if (str(tmp[3]).lower() == "without"):
+		print ""
+		print "   " + color.BOLD + "Plaese Confirm:" + color.END
+		print "   You have selected to restore configration files without restart. In order to achieve this."
+		print "   PGL will now try to overwrite the following listed configuration files:"
+		print ""
+		print color.BOLD + "      * " + confrestore_postgresql_conf + color.END
+		print color.BOLD + "      * " + confrestore_hba_conf + color.END
+		print color.BOLD + "      * " + confrestore_ident_conf + color.END
+		print ""
+		print "   In order to complete this operation, PGL will execute the 'pg_reload_conf' system function to reload the configurations."
+		print "   FYI: Not all configurations are changed dynamically and may require a restart."
+		print ""
+		apr = raw_input(color.BOLD + "   Please confirm to start the restore [Y/N]: " + color.END)
+		if (apr.lower() == "y"):
+			try:
+				sys_recover_config('POSTGRESQL.CONF',confrestore_file_name,confrestore_postgresql_conf)
+				sys_recover_config('PG_HBA.CONF',confrestore_file_name,confrestore_hba_conf)
+				sys_recover_config('PG_IDENT.CONF',confrestore_file_name,confrestore_ident_conf)
+				tmp_cur = tmp_con.cursor()
+				tmp_cur.execute("select pg_reload_conf();")
+				tmp_con.close()
+				print ""
+				print "   " + color.GREEN + color.BOLD + "Configuration restore succeeded." + color.END
+				print "   FYI: Values reloaded by calling the 'pg_reload_conf' system function."
+				print ""
+				return
+			except:
+				tmp_con.close()
+				print ""
+				print color.RED + color.BOLD + "   The configuration restore process failed." + color.END
+				print ""
+				return
+		else:
+			tmp_con.close()
+			print ""
+			return
+	if (str(tmp[3]).lower() == "with"):
+		if (sys_restart_command == ""):
+			tmp_con.close()
+			print ""
+			print "   PGL-110: The restart command was not set."
+			print ""
+			return
+		print ""
+		print "   " + color.BOLD + "Plaese Confirm:" + color.END
+		print "   You have selected to restore configration files without restart. In order to achieve this."
+		print "   PGL will now try to overwrite the following listed configuration files:"
+		print ""
+		print color.BOLD + "      * " + confrestore_postgresql_conf + color.END
+		print color.BOLD + "      * " + confrestore_hba_conf + color.END
+		print color.BOLD + "      * " + confrestore_ident_conf + color.END
+		print ""
+		print color.BOLD + color.RED + "   Extremely Important:" + color.END
+		print color.RED + "   PGLiveBackup will restart your PostgreSQL server after completing the configration files retore." + color.END
+		print color.RED + "   The following command will be executed: " + color.END + sys_restart_command
+		print ""
+		apr = raw_input(color.BOLD + "   Please confirm to start the restore [Y/N]: " + color.END)
+		if (apr.lower() == "y"):
+			try:
+				tmp_con.close()
+				sys_recover_config('POSTGRESQL.CONF',confrestore_file_name,confrestore_postgresql_conf)
+				sys_recover_config('PG_HBA.CONF',confrestore_file_name,confrestore_hba_conf)
+				sys_recover_config('PG_IDENT.CONF',confrestore_file_name,confrestore_ident_conf)
+				os.system(sys_restart_command)
+				print ""
+				print "   " + color.GREEN + color.BOLD + "Configuration restore succeeded." + color.END
+				print "   FYI: Values reloaded by calling the 'pg_reload_conf' system function."
+				print ""
+				return
+			except:
+				tmp_con.close()
+				print ""
+				print color.RED + color.BOLD + "   The configuration restore process failed." + color.END
+				print ""
+				return		
+		else:
+			tmp_con.close()
+			print ""
+			return
+	print ""
+
+def sys_recover_config(recover_part_name,recover_from_file,recover_to_file):
+	line_start = ""
+	line_end = ""
+	os.system('rm -f ' + recover_to_file)
+	proc = subprocess.Popen(["cat -n " + recover_from_file + " | grep '#START " + recover_part_name.upper() + "' | awk '{print $1}' | sed 's/ //g'", ""], stdout=subprocess.PIPE, shell=True)
+	(line_start,err) = proc.communicate()
+	proc = subprocess.Popen(["cat -n " + recover_from_file + " | grep '#END " + recover_part_name.upper() + "' | awk '{print $1}' | sed 's/ //g'", ""], stdout=subprocess.PIPE, shell=True)
+	(line_end,err) = proc.communicate()
+	line_start = line_start.strip()
+	line_end = line_end.strip()
+	line_cmd = "cat " + recover_from_file + " | awk 'NR >= " + str(line_start) + " && NR <= " + str(line_end) + "' >> " + recover_to_file
+	os.system(line_cmd)
+	os.system("sed -i -- 's/#START " + recover_part_name.upper() + "//g' " + recover_part_name.lower())
+	os.system("sed -i -- 's/#END " + recover_part_name.upper() + "//g' " + recover_part_name.lower())
+
+def display_jobs_status():
+	print ""
+	print "   " + color.BOLD + "Backup Job Status Information" + color.END
+	print ""
+	print "   Job Name             Database Name        Task Type  Last Runtime         Next Runtime         Status    "
+	print "   -------------------- -------------------- ---------- -------------------- -------------------- ----------"
+	tmp_con = psycopg2.connect(database="postgres")
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select rpad(a.job_name,20),rpad(a.db_name,20),rpad(a.task_type,10),to_char(a.last_runtime,'YYYY-MM-DD HH24:MI'),to_char(a.next_runtime,'YYYY-MM-DD HH24:MI'),is_running_now::int from pgl.jobs a;")
+	tmp_rows = tmp_cur.fetchall()
+	ln = ""
+	for row in tmp_rows:
+		ln = "   " + color.BOLD + row[0] + color.END + " " + row[1] + " " + row[2] + " "
+		if ((str(row[3]) == "") or (row[3] == None)):
+			ln = ln + "Never Executed       "
+		else:
+			ln = ln + str(row[3]) + "     "
+		if ((str(row[4]) == "") or (row[4] == None)):
+			ln = ln + "Not Scheduled        "
+		else:
+			ln = ln + str(row[4]) + "     "
+		if (str(row[5]) == "0"):
+			ln = ln + "Idle"
+		else:
+			ln = ln + color.GREEN + "Running" + color.END
+		print ln
+	print ""
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select count(*) from pgl.services where service_code = 'BACKUPJOB' and service_enabled::int = 1;")
+	tmp_rows = tmp_cur.fetchone()
+	if (int(tmp_rows[0]) == 0):
+		print "   " + color.BOLD + color.YELLOW + "FYI:" + color.END + " " + color.YELLOW + "The automated backup flag is disabled - please enable it to allow scheduled backups." + color.END
+	tmp_con.close()
+	print ""
+	return
+
+def automate_update_running(jobid):
+	con = psycopg2.connect(database="postgres")
+	cur = con.cursor()
+	cur.execute("update pgl.jobs set is_running_now = 1::bit where rowid = " + jobid + ";")
+	con.commit()
+	con.close()
+	del cur
+	del con
+
+def	automate_check_interval_service():
+	tmp = 0
+	con = psycopg2.connect(database="postgres")
+	cur = con.cursor()
+	cur.execute("select count(*) from pgl.services where service_code = 'BACKUPJOB' and service_enabled = 1::bit;")
+	row = cur.fetchone()
+	tmp = int(row[0])
+	con.close()
+	del cur
+	del con
+	return tmp
+
+def internal_quick_sql(sqlcmd):
+	con = psycopg2.connect(database="postgres")
+	cur = con.cursor()
+	cur.execute(sqlcmd)
+	con.commit()
+	con.close()
+	del cur
+	del con
+
+def enable_service(c):
+	c = c.replace("enable","")
+	c = c.replace("ENABLE","")
+	c = c.replace("service","")
+	c = c.replace("SERVICE","")
+	c = c.strip()
+	con = psycopg2.connect(database="postgres")
+	cur = con.cursor()
+	cur.execute("select count(*) from pgl.services where service_code = '" + c + "';")
+	row = cur.fetchone()
+	if (int(row[0]) == 0):
+		con.close()
+		del cur
+		del con
+		print ""
+		print "   PGL-191: The service name [" + c + "] does not exist."
+		print ""
+		return
+	cur = con.cursor()
+	cur.execute("update pgl.services set service_enabled = 1::bit where service_code = '" + c + "';")
+	con.commit()
+	con.close()
+	del cur
+	del con
+	print ""
+	print "   " + color.BOLD + "Service [" + c + "] was enabled." + color.END
+	print ""
+
+def disable_service(c):
+	c = c.replace("disable","")
+	c = c.replace("DISABLE","")
+	c = c.replace("service","")
+	c = c.replace("SERVICE","")
+	c = c.strip()
+	con = psycopg2.connect(database="postgres")
+	cur = con.cursor()
+	cur.execute("select count(*) from pgl.services where service_code = '" + c + "';")
+	row = cur.fetchone()
+	if (int(row[0]) == 0):
+		con.close()
+		del cur
+		del con
+		print ""
+		print "   PGL-191: The service name [" + c + "] does not exist."
+		print ""
+		return
+	cur = con.cursor()
+	cur.execute("update pgl.services set service_enabled = 0::bit where service_code = '" + c + "';")
+	con.commit()
+	con.close()
+	del cur
+	del con
+	print ""
+	print "   " + color.BOLD + "Service [" + c + "] was disabled." + color.END
+	print ""
+	
+if (len(sys.argv) > 1):
+	for i in range(len(sys.argv)):
+		if (i > 0):
+			if (str(sys.argv[i]) == "--automate"):
+				sys_automate_mode = "yes"
+			if (str(sys.argv[i]).lower() == "--ignore-envs"):
+				sys_ignore_envs = "yes"
+			if (str(sys.argv[i]).lower() == "--no-repo"):
+				sys_no_repo = "yes"
+			if ((str(sys.argv[i]).lower() != "--no-repo") and (str(sys.argv[i]).lower() != "--ignore-envs") and (str(sys.argv[i]).lower() != "--automate")):
+				print "  PGL-020: Command line argument incorrect: " + sys.argv[i] + ". Ignoring this argument."
+				print ""
+
+if (getpass.getuser() != 'postgres'):
+	print " PGL-001: PGLiveBackup must be run with the user 'postgres'"
+	print ""
+	exit(0)
+
+if not (os.path.isfile('/bin/pg_dump')):
+	print " PGL-002: Could not find pg_dump utility on bin folder."
+	print ""
+	exit(0)
+else:
+	sys_pg_dump = "/bin/pg_dump"
+
+if not (os.path.isfile('/bin/psql')):
+	print " PGL-003: Could not find psql utility on bin folder."
+	print ""
+	exit(0)
+else:
+	sys_psql = "/bin/psql"
+
+if not (os.path.isfile('/bin/scp')):
+	print " PGL-005: Could not find scp utility on bin folder."
+	print ""
+	exit(0)
+else:
+	sys_scp = "/bin/scp"
+
+if not (os.path.isfile('/bin/pg_restore')):
+	print " PGL-004: Could not find pg_restore utility on bin folder."
+	print ""
+	exit(0)
+else:
+	sys_pg_restore = "/bin/pg_restore"
+
+if (sys_automate_mode == "yes"):
+	if (int(automate_check_interval_service()) == 0):
+		exit(0)
+	tmp_cmd = ""
+	tmp_filename = ""
+	tmp_full_filename = ""
+	tmp_sql = ""
+	tmp_filesize_kb = 0
+	if (sys_dest == ""):
+		sys_append_log_line("PGLiveBackup Automation: The system destination is not set - backup operations can not continue (see documentation).")
+		exit(0)
+	if (sys_no_repo == "yes"):
+		sys_append_log_line("PGLiveBackup Automation: system is in offline mode. Exiting.")
+		exit(0)
+	tmp_con = psycopg2.connect(database="postgres")
+	tmp_cur = tmp_con.cursor()
+	tmp_cur.execute("select rowid,job_name,db_name,task_type,tables_inventory,interval_minutes from pgl.jobs where ((to_char(next_runtime,'YYYY-MM-DD-HH24-MI') = to_char(current_timestamp,'YYYY-MM-DD-HH24-MI')) or (next_runtime < current_timestamp)) and is_enabled = 1::bit and is_running_now = 0::bit;")
+	tmp_rows = tmp_cur.fetchall()
+	for row in tmp_rows:
+		tmp_filename = ""
+		tmp_cmd = ""
+		tmp_sql = ""
+		tmp_filename = "PGL10"
+		for i in range(1,25):
+			tmp_filename = tmp_filename + str(randint(0,9))
+		tmp_filename = tmp_filename + ".pgl"
+		tmp_cmd = sys_pg_dump + " -Fc -d " + row[2] + " "
+		if (str(row[3]).lower() == "tables"):
+			split1 = row[4]
+			split2 = shlex.split(split1,',')
+			for tbl in split2:
+				tmp_cmd = tmp_cmd + "-t " + tbl + " "
+		if (sys_dest.endswith("/")):
+			tmp_full_filename = sys_dest + tmp_filename
+		else:
+			tmp_full_filename = sys_dest + "/" + tmp_filename
+		tmp_cmd = tmp_cmd + "> " + tmp_full_filename
+		os.system(tmp_cmd)
+		tmp_filesize_kb = os.path.getsize(tmp_full_filename)
+		tmp_filesize_kb = (tmp_filesize_kb/1024)
+		tmp_sql = "insert into pgl.backuplog (db_name,task_type,tables_inventory,start_date,file_name,file_size_kb,is_compressed,is_from_job) values ('" + row[2] + "','" + row[3] + "','" + row[4] + "',current_timestamp,'" + tmp_full_filename + "'," + str(tmp_filesize_kb) + ",1::bit,1::bit);"
+		internal_quick_sql(tmp_sql)
+		tmp_sql = "update pgl.jobs set last_runtime = current_timestamp, is_running_now = 0::bit, next_runtime = (current_timestamp + interval '1 minute' *  interval_minutes) where rowid = " + str(row[0]) + ";"
+		internal_quick_sql(tmp_sql)
+	tmp_con.close()
+	del tmp_cur
+	del tmp_con
+	exit(0)
+
+print ""
+print " " + sys_product_name + " Command Line Utility (" + color.BOLD + "http://www.pglivebackup.org" + color.END + ")."
+print " Release " + sys_product_release + " - Licensed under the MIT license."	
+print ""
+# check repo
+try:
+	conn = psycopg2.connect(database="postgres")
+	cur = conn.cursor()
+	if (sys_no_repo == "no"):
+		cur.execute("select count(*) from information_schema.schemata where schema_name = 'pgl';")
+		row = cur.fetchone()
+		if (row[0] == 0):
+			print " " + color.BOLD + " FYI:" + color.END + " Could not connect to the PGL repository. Some functionality might not work."
+			print ""
+		else:
+			is_connected = "yes"
+except:
+	print " " + color.BOLD + " FYI:" + color.END + " Could not connect to the PGL repository. Some functionality might not work."
+	print ""
+
+sys_check_and_recreate_log_file()
+sys_check_env_destination()
+
+sys_check_env_maxsize()
+sys_check_env_port()
+sys_check_env_restart_command()
+sys_append_log_line(sys_product_name + " " + sys_product_release + " CLI starting.")
+
+print ""
+while (True):
+	sys_found_command = "no"
+	tmpstr = ""
+	if (sys_no_repo == "yes"):
+		tmpstr = color.BOLD + "  PGL [" + color.CYAN + "offline" + color.END + "]> "
+	else:
+		tmpstr = color.BOLD + "  PGL> " + color.END
+	mc = raw_input(tmpstr)
+	if ((mc.lower() == "clear") or (mc.lower() == "\c")):
+		os.system('clear')
+		print ""
+	if (mc == "\q") or (mc == "quit") or (mc == "\Q") or (mc == "QUIT"):
+		print ""
+		exit(0)
+	if (mc.startswith('!')):
+		handle_terminal_command(mc)
+	if (mc.lower() == "init"):
+		initdb()
+	if (mc.startswith('set')) or (mc.startswith('SET')):
+		handle_set_command(mc)
+	if (mc.startswith('show')) or (mc.startswith('SHOW')):
+		showvariable(mc)
+	if ((mc.lower() == "status") or (mc.lower() == "\s")):
+		show_system_status()
+	if ((mc.startswith('backup database')) or (mc.startswith('BACKUP DATABASE'))):
+		backup_database_proc(mc)
+	if (str(mc.lower()).startswith("stop log")):
+		change_log_status("stop")
+	if (str(mc.lower()).startswith("resume log")):
+		change_log_status("resume")
+	if (str(mc.lower()).strip() == "backup configs"):
+		handle_configs_backup()
+	if (str(mc.lower()).startswith("lookup")):
+		handle_lookup(mc)
+	if (str(mc.lower()).startswith("drop part")):
+		handle_drop_part(mc)
+	if (str(mc.lower()).startswith("restore part")):
+		handle_restore_part(mc)
+	if (str(mc.lower()).startswith("restore config")):
+		restore_config_procedure(mc)
+	if (str(mc.lower()).startswith("softdrop part")):
+		handle_soft_drop_part(mc)
+	if (mc.lower() == "service status"):
+		service_status_all()
+	if (str(mc.lower()).startswith("service enable")):
+		enable_service(mc)
+	if (str(mc.lower()).startswith("service disable")):
+		disable_service(mc)
+	if (mc.lower() == "cluster status"):
+		handle_current_dbs()
+	if (str(mc.lower()).startswith("create job")):
+		handle_create_job(mc)
+	if (str(mc.lower()).startswith("drop job")):
+		handle_drop_job_command(mc.lower())
+	if (mc.lower() == "job status"):
+		display_jobs_status()
